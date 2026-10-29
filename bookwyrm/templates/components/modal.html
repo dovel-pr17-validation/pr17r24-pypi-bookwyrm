@@ -1,0 +1,33 @@
+{% load i18n %}
+
+<div class="modal {% if active %}is-active{% endif %}" id="{% firstof id 'standalone-modal' %}">
+    <div class="modal-background" {% if close_path %}data-modal-close="{{ close_path }}"{% else %}data-modal-close{% endif %}></div>
+    <div class="modal-card" role="dialog" aria-modal="true" tabindex="-1" aria-described-by="{{ id }}_header">
+        <header class="modal-card-head">
+            <h2 class="modal-card-title mb-0" id="{{ id }}_header">
+                {% block modal-title %}{% endblock %}
+            </h2>
+            <button
+                type="button"
+                class="delete"
+                aria-label="{% trans 'Close' %}"
+                data-modal-close
+            ></button>
+        </header>
+
+        {% block modal-form-open %}{% endblock %}
+        <section class="modal-card-body">
+            {% block modal-body %}{% endblock %}
+        </section>
+        <footer class="modal-card-foot control">
+            {% block modal-footer %}{% endblock %}
+        </footer>
+        {% block modal-form-close %}{% endblock %}
+    </div>
+    <button
+        type="button"
+        class="modal-close is-large"
+        aria-label="{% trans 'Close' %}"
+        data-modal-close
+    ></button>
+</div>

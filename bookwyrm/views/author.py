@@ -1,0 +1,142 @@
+"""the good people stuff! the authors!"""
+
+from django.contrib.auth.decorators import login_required, permission_required
+from django.core.paginator import Paginator
+from django.db.models import Min, Q
+from django.db.models.functions import Coalesce
+from django.shortcuts import get_object_or_404, redirect
+from django.template.response import TemplateResponse
+from django.utils.decorators import method_decorator
+from django.views import View
+from django.views.decorators.http import require_POST
+from django.views.decorators.vary import vary_on_headers
+from django_celery_beat.models import PeriodicTask
+
+from bookwyrm import forms, models
+from bookwyrm.activitypub import ActivitypubResponse
+from bookwyrm.connectors import connector_manager
+from bookwyrm.settings import PAGE_LENGTH
+from bookwyrm.views.helpers import (
+    is_api_request,
+    get_mergeable_object_or_404,
+    maybe_redirect_local_path,
+    search_within_queryset,
+)
+from bookwyrm.views.mixins import MergeableViewMixin
+
+
+class Author(MergeableViewMixin, View):
+    """this person wrote a book"""
+
+    merge_model = models.Author
+
+    @vary_on_headers("Accept")
+    def get(self, request, mergeable_object_id, slug=None):
+        """landing page for an author"""
+        author = get_mergeable_object_or_404(models.Author, id=mergeable_object_id)
+
+        if is_api_request(request):
+            return ActivitypubResponse(author.to_activity())
+
+        if redirect_local_path := maybe_redirect_local_path(request, author):
+            return redirect_local_path
+
+        blocked_books = (
+            request.user.blocked_books.values_list("id", flat=True)
+            if request.user.is_authenticated
+            else []
+        )
+        works = (
+            models.Work.objects.filter(editions__authors=author)
+            .exclude(id__in=blocked_books)
+            .annotate(
+                sort_date=Coalesce(
+                    "first_published_date",
+                    "published_date",
+                    Min("editions__first_published_date"),
+                    Min("editions__published_date"),
+                )
+            )
+            .order_by("-sort_date")
+            .distinct()
+        )
+
+        if query := request.GET.get("q"):
+            works = search_within_queryset(
+                works,
+                query,
+                searchable_fields=[
+                    "title",
+                    "isfdb",
+                    "lccn",
+                ],
+            )
+
+        if filter_series := request.GET.get("series"):
+            works = works.filter(
+                Q(seriesbooks__series=filter_series)
+                | Q(editions__seriesbooks__series=filter_series)
+            )
+
+        series = (
+            models.Series.objects.filter(seriesbooks__book__authors=author)
+            .order_by("created_date")
+            .distinct()
+        )
+
+        paginated = Paginator(works, PAGE_LENGTH)
+        page = paginated.get_page(request.GET.get("page"))
+
+        merge_scheduled = PeriodicTask.objects.filter(name="dedupe-merge-task").exists()
+        data = {
+            "author": author,
+            "author_dupe": author.pending_merge_target,
+            "merge_scheduled": merge_scheduled,
+            "series": series,
+            "works": page,
+            "page_range": paginated.get_elided_page_range(
+                page.number, on_each_side=2, on_ends=1
+            ),
+        }
+        return TemplateResponse(request, "author/author.html", data)
+
+
+@method_decorator(login_required, name="dispatch")
+@method_decorator(
+    permission_required("bookwyrm.edit_book", raise_exception=True), name="dispatch"
+)
+class EditAuthor(View):
+    """edit author info"""
+
+    def get(self, request, author_id):
+        """info about a book"""
+        author = get_mergeable_object_or_404(models.Author, id=author_id)
+        data = {"author": author, "form": forms.AuthorForm(instance=author)}
+        return TemplateResponse(request, "author/edit_author.html", data)
+
+    def post(self, request, author_id):
+        """edit a author cool"""
+        author = get_mergeable_object_or_404(models.Author, id=author_id)
+
+        form = forms.AuthorForm(request.POST, request.FILES, instance=author)
+        if not form.is_valid():
+            data = {"author": author, "form": form}
+            return TemplateResponse(request, "author/edit_author.html", data)
+        author = form.save(request)
+
+        return redirect(f"/author/{author.id}")
+
+
+@login_required
+@require_POST
+@permission_required("bookwyrm.edit_book", raise_exception=True)
+def update_author_from_remote(request, author_id, connector_identifier):
+    """load the remote data for this author"""
+    connector = connector_manager.load_connector(
+        get_object_or_404(models.Connector, identifier=connector_identifier)
+    )
+    author = get_mergeable_object_or_404(models.Author, id=author_id)
+
+    connector.update_author_from_remote(author)
+
+    return redirect("author", author.id)

@@ -1,0 +1,1 @@
+We'd love you to contribute to BookWyrm! Please see [How to Contribute](https://docs.joinbookwyrm.com/contributing.html) in the BookWyrm docs.
